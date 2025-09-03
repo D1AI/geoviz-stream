@@ -3,11 +3,28 @@
 import { useEffect, useRef, useState } from "react";
 import type { ShipPosition } from "@/types/Ship";
 
-const DEFAULT_URL = (process.env.NEXT_PUBLIC_WS_URL as string) || "ws://localhost:8000/ws";
+const BASE_URL =
+    (process.env.NEXT_PUBLIC_WS_URL as string) || "ws://localhost:8000/ws";
 
-export function useShipStream(url: string = DEFAULT_URL, batchMs = 500) {
+export function useShipStream(
+    params?: { bbox?: [number, number, number, number]; lookbackMin?: number },
+    batchMs = 500
+) {
     const [ships, setShips] = useState<ShipPosition[]>([]);
     const latest = useRef<Map<string, ShipPosition>>(new Map());
+
+    // Build URL with query params
+    const url = (() => {
+        const u = new URL(BASE_URL);
+        if (params?.bbox) {
+            const [lat1, lon1, lat2, lon2] = params.bbox;
+            u.searchParams.set("bbox", `${lat1},${lon1},${lat2},${lon2}`);
+        }
+        if (typeof params?.lookbackMin === "number") {
+            u.searchParams.set("lookback_min", String(params.lookbackMin));
+        }
+        return u.toString().replace("http", "ws");
+    })();
 
     useEffect(() => {
         let closed = false;
@@ -18,12 +35,20 @@ export function useShipStream(url: string = DEFAULT_URL, batchMs = 500) {
 
             ws.onmessage = (event) => {
                 try {
-                    const msg = JSON.parse(event.data) as Partial<ShipPosition> & { mt?: string };
-                    // Minimal schema guard
-                    if (!msg || typeof msg.id !== "string" || typeof msg.lat !== "number" || typeof msg.lon !== "number") {
+                    const msg = JSON.parse(event.data);
+                    // Ignore control frames from server
+                    if (msg?.type === "ping" || msg?.type === "history_start" || msg?.type === "history_done") {
                         return;
                     }
-                    // Save latest per id
+                    // Minimal schema guard
+                    if (
+                        !msg ||
+                        typeof msg.id !== "string" ||
+                        typeof msg.lat !== "number" ||
+                        typeof msg.lon !== "number"
+                    ) {
+                        return;
+                    }
                     latest.current.set(msg.id, {
                         id: msg.id,
                         lat: msg.lat,
@@ -31,15 +56,15 @@ export function useShipStream(url: string = DEFAULT_URL, batchMs = 500) {
                         sog: msg.sog,
                         cog: msg.cog,
                         hdg: msg.hdg,
-                        t: msg.t
+                        t: msg.t,
                     });
                 } catch {
-                    // ignore malformed frames
+                    /* ignore malformed frames */
                 }
             };
 
             ws.onclose = () => {
-                if (!closed) setTimeout(open, 1000); // simple reconnect
+                if (!closed) setTimeout(open, 1000);
             };
         };
 
@@ -47,7 +72,6 @@ export function useShipStream(url: string = DEFAULT_URL, batchMs = 500) {
 
         const timer = window.setInterval(() => {
             if (latest.current.size) {
-                // Emit and clear to keep memory bounded
                 setShips(Array.from(latest.current.values()));
                 latest.current.clear();
             }
@@ -56,7 +80,9 @@ export function useShipStream(url: string = DEFAULT_URL, batchMs = 500) {
         return () => {
             closed = true;
             window.clearInterval(timer);
-            try { ws?.close(); } catch { }
+            try {
+                ws?.close();
+            } catch { }
         };
     }, [url, batchMs]);
 

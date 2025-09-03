@@ -15,7 +15,6 @@ services:
       - INTERNAL://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
       - --advertise-kafka-addr
       - INTERNAL://redpanda:9092,OUTSIDE://localhost:19092
-      # Optional: keep admin/schema/pandaproxy on; harmless
       - --pandaproxy-addr
       - 0.0.0.0:8082
       - --advertise-pandaproxy-addr
@@ -25,10 +24,9 @@ services:
     ports:
       - "9092:19092"   # host -> OUTSIDE listener
       - "9644:9644"    # admin
-      - "8081:8081"    # schema registry (optional)
-      - "8082:8082"    # pandaproxy (optional)
+      - "8081:8081"    # schema registry
+      - "8082:8082"    # pandaproxy
     healthcheck:
-      # IMPORTANT: talk to the INTERNAL broker address from inside the container
       test: ["CMD", "bash", "-lc", "rpk cluster info --brokers redpanda:9092 || exit 1"]
       interval: 5s
       timeout: 3s
@@ -75,14 +73,14 @@ services:
       - "8000:8000"
     restart: unless-stopped
 
-  # web:
-  #   build: ./web
-  #   depends_on: [ws-api]
-  #   environment:
-  #     NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000/ws}
-  #   ports:
-  #     - "3000:3000"
-  #   restart: unless-stopped
+# web:
+#   build: ./web
+#   depends_on: [ws-api]
+#   environment:
+#     NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000/ws}
+#   ports:
+#     - "3000:3000"
+#   restart: unless-stopped
 
 volumes:
   redpanda-data:

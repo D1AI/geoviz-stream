@@ -12,11 +12,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("ingestor")
 
+# setting env vars for runner
 BROKERS = os.getenv("KAFKA_BROKERS", "redpanda:9092")
-TOPIC = os.getenv("TOPIC", "ships")
+TOPIC = os.getenv("TOPIC", "ships") # use topic ships if nothing provided
 API_KEY = os.getenv("AISSTREAM_API_KEY", "")
-BBOX_JSON = os.getenv("BBOX_JSON", '[[[48.5, -5.5], [51.5, 2.5]]]')
-FILTER_MESSAGE_TYPES = os.getenv("FILTER_MESSAGE_TYPES", "PositionReport")
+BBOX_JSON = os.getenv("BBOX_JSON", '[[[48.5, -5.5], [51.5, 2.5]]]') # bbox for English Channel if nothing provided
+FILTER_MESSAGE_TYPES = os.getenv("FILTER_MESSAGE_TYPES", "PositionReport") # use positionReport if nothing provided
 RECONNECT_SECONDS = float(os.getenv("RECONNECT_SECONDS", "3"))
 DEBUG_EVERY = int(os.getenv("DEBUG_EVERY", "200"))
 URL = "wss://stream.aisstream.io/v0/stream"
@@ -30,10 +31,12 @@ def build_subscribe() -> str:
         "BoundingBoxes": json.loads(BBOX_JSON),
     }
     if FILTER_MESSAGE_TYPES:
+        # filter out non-desired message types
         payload["FilterMessageTypes"] = [t.strip() for t in FILTER_MESSAGE_TYPES.split(",") if t.strip()]
     return json.dumps(payload)
 
 def normalize_position(evt: dict):
+    # prepare message in clean, normalized format
     pr = evt.get("Message", {}).get("PositionReport", {})
     lat, lon = pr.get("Latitude"), pr.get("Longitude")
     if lat is None or lon is None:
@@ -50,6 +53,7 @@ def normalize_position(evt: dict):
     }
 
 async def start_producer_with_retry() -> AIOKafkaProducer:
+    # this will start the producer, retrying with exponential backoff if needed
     backoff = 1
     while True:
         try:
@@ -61,18 +65,18 @@ async def start_producer_with_retry() -> AIOKafkaProducer:
             )
             await producer.start()
             log.info(f"Connected to Kafka at %s", BROKERS)
-            return producer
+            return producer # we will use this for sending messages
         except KafkaConnectionError as e:
             log.warning("Broker not ready (%s); retrying in %ss", e, backoff)
         except Exception as e:
             log.error("Unexpected error starting producer: %s; retrying in %ss", e, backoff)
-        await asyncio.sleep(backoff)
+        await asyncio.sleep(backoff) # sleep for exp backoff
         backoff = min(backoff * 2, 10)
 
 async def run_once(producer: AIOKafkaProducer):
     log.info("Connecting WebSocket → %s", URL)
-    async with websockets.connect(URL, max_size=2**22) as ws:
-        sub = build_subscribe()
+    async with websockets.connect(URL, max_size=2**22) as ws: # connect to AIS URL (public)
+        sub = build_subscribe() # construct connection payload via env vars per what AIS Stream expects
         log.info("Sending AIS subscription: %s", sub)
         await ws.send(sub)
 
@@ -91,8 +95,10 @@ async def run_once(producer: AIOKafkaProducer):
                 continue
 
             if evt.get("MessageType") == "PositionReport":
-                rec = normalize_position(evt)
+                rec = normalize_position(evt) # rec is the normalized message
                 if rec:
+                    # WE DONT NEED TO DO ANY BBOX CHECKING, 
+                    # AIS Stream already does it and doesn't send us data outside of our BBOX
                     await producer.send_and_wait(TOPIC, rec, key=rec["id"].encode("utf-8"))
                     msg_count += 1
                     if msg_count % DEBUG_EVERY == 0:

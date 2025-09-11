@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      build_all:
+        description: "Build ALL services (ignore path changes)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -39,17 +44,16 @@ jobs:
               - 'ingestor/**'
             ws_api:
               - 'ws-api/**'
-            # uncomment to force rebuild both when shared code changes
-            # shared:
-            #   - 'common/**'
-            #   - 'docker/**'
 
-      - name: Build matrix (only changed services; tags build all)
+      - name: Build matrix
         id: set-matrix
         uses: actions/github-script@v7
+        env:
+          BUILD_ALL: ${{ inputs.build_all }}
         with:
           script: |
             const isTag = context.ref.startsWith('refs/tags/');
+            const forceAll = `${process.env.BUILD_ALL}` === 'true';
             const changed = {
               ingestor: `${{ steps.filter.outputs.ingestor }}` === 'true',
               wsapi: `${{ steps.filter.outputs.ws_api }}` === 'true',
@@ -59,16 +63,15 @@ jobs:
               { service: 'ws-api',  context: './ws-api',   dockerfile: './ws-api/Dockerfile' },
             ];
             let include = [];
-            if (isTag) {
+            if (isTag || forceAll) {
               include = all;
             } else {
               if (changed.ingestor) include.push(all[0]);
               if (changed.wsapi)   include.push(all[1]);
-              // if ( `${{ steps.filter.outputs.shared }}` === 'true') include = all;
             }
-            core.info(`Changed services: ${include.map(s => s.service).join(', ') || '(none)'}`);
+            core.info(`Selected services: ${include.map(s => s.service).join(', ') || '(none)'}`);
             core.setOutput('matrix', JSON.stringify({ include }));
-            core.setOutput('run_build', String(include.length > 0 || isTag));
+            core.setOutput('run_build', String(include.length > 0 || isTag || forceAll));
 
   build:
     name: Build & Push
@@ -110,13 +113,13 @@ jobs:
             org.opencontainers.image.title=${{ matrix.service }}
             org.opencontainers.image.description=${{ matrix.service }} image from ${{ github.repository }}
 
-      - name: Build (PRs) / Push (main & tags)
+      - name: Build (PRs) / Push (main & tags & manual)
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
-          push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) }}
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

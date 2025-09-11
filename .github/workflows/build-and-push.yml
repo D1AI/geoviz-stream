@@ -1,46 +1,88 @@
-name: Only build and push changed services to github container registry
+name: Build & Push Docker Images (changed services only)
 
 on:
   push:
     branches: [ "main", "release/**" ]
     tags: [ "v*.*.*" ]
-    paths:
-      - "ingestor/**"
-      - "ws-api/**"
-      - ".github/workflows/**"
-      - "docker-compose.yml"
   pull_request:
     branches: [ "main" ]
-    paths:
-      - "ingestor/**"
-      - "ws-api/**"
-      - ".github/workflows/**"
-      - "docker-compose.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
   id-token: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  prepare:
+    name: Detect changed services
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      run_build: ${{ steps.set-matrix.outputs.run_build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            ingestor:
+              - 'ingestor/**'
+            ws_api:
+              - 'ws-api/**'
+            # uncomment to force rebuild both when shared code changes
+            # shared:
+            #   - 'common/**'
+            #   - 'docker/**'
+
+      - name: Build matrix (only changed services; tags build all)
+        id: set-matrix
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const isTag = context.ref.startsWith('refs/tags/');
+            const changed = {
+              ingestor: `${{ steps.filter.outputs.ingestor }}` === 'true',
+              wsapi: `${{ steps.filter.outputs.ws_api }}` === 'true',
+            };
+            const all = [
+              { service: 'ingestor', context: './ingestor', dockerfile: './ingestor/Dockerfile' },
+              { service: 'ws-api',  context: './ws-api',   dockerfile: './ws-api/Dockerfile' },
+            ];
+            let include = [];
+            if (isTag) {
+              include = all;
+            } else {
+              if (changed.ingestor) include.push(all[0]);
+              if (changed.wsapi)   include.push(all[1]);
+              // if ( `${{ steps.filter.outputs.shared }}` === 'true') include = all;
+            }
+            core.info(`Changed services: ${include.map(s => s.service).join(', ') || '(none)'}`);
+            core.setOutput('matrix', JSON.stringify({ include }));
+            core.setOutput('run_build', String(include.length > 0 || isTag));
+
   build:
+    name: Build & Push
+    needs: prepare
+    if: ${{ needs.prepare.outputs.run_build == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - service: ingestor
-            context: ./ingestor
-            dockerfile: ./ingestor/Dockerfile
-          - service: ws-api
-            context: ./ws-api
-            dockerfile: ./ws-api/Dockerfile
-
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
     steps:
       - name: Checkout
-      - uses: actions/checkout@v4
+        uses: actions/checkout@v4
 
-      - name: Set up QEMU (for future multi-arch)
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
@@ -53,7 +95,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata
+      - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -68,13 +110,13 @@ jobs:
             org.opencontainers.image.title=${{ matrix.service }}
             org.opencontainers.image.description=${{ matrix.service }} image from ${{ github.repository }}
 
-      - name: Build (PRs build only) & Push (main/tags)
+      - name: Build (PRs) / Push (main & tags)
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          push: ${{ github.event_name != 'pull_request' }}
           platforms: linux/amd64
+          push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

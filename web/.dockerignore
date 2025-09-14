@@ -1,0 +1,11 @@
+# Dependencies / build
+node_modules
+.next
+out
+dist
+# VCS / local
+.git
+.gitignore
+.DS_Store
+npm-debug.log*
+.env*

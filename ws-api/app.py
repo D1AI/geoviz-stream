@@ -6,22 +6,24 @@ from aiokafka import AIOKafkaConsumer, TopicPartition
 import orjson as json
 import time
 
+# setting env vars for runner
 BROKERS = os.getenv("KAFKA_BROKERS", "redpanda:9092")
-TOPIC = os.getenv("TOPIC", "ships")
-
-SEND_INTERVAL_MS = int(os.getenv("SEND_INTERVAL_MS", "200"))
-MAX_PER_TICK     = int(os.getenv("MAX_PER_TICK", "500"))
-CLIENT_BUFFER_MAX = int(os.getenv("CLIENT_BUFFER_MAX", "5000"))
-DEDUPE_TTL_SEC = float(os.getenv("DEDUPE_TTL_SEC", "2.0"))
-IDLE_PING_SEC = int(os.getenv("IDLE_PING_SEC", "20"))
-EMIT_HISTORY_MARKERS = os.getenv("EMIT_HISTORY_MARKERS", "true").lower() != "false"
+TOPIC = os.getenv("TOPIC", "ships") # kafka topic to listen to
+SEND_INTERVAL_MS = int(os.getenv("SEND_INTERVAL_MS", "200")) # how often to send data to client
+MAX_PER_TICK     = int(os.getenv("MAX_PER_TICK", "500")) # max records to send per tick
+CLIENT_BUFFER_MAX = int(os.getenv("CLIENT_BUFFER_MAX", "5000")) # max records to buffer per client
+DEDUPE_TTL_SEC = float(os.getenv("DEDUPE_TTL_SEC", "2.0")) # how long to remember last position per vessel for deduplication
+IDLE_PING_SEC = int(os.getenv("IDLE_PING_SEC", "20")) # how often to send pings on idle connections
+EMIT_HISTORY_MARKERS = os.getenv("EMIT_HISTORY_MARKERS", "true").lower() != "false" # whether to emit history_start/history_done markers in hybrid mode
 
 app = FastAPI(title="AIS WS")
 
+# extremely simple healthcheck for server health
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
 
+# bbox parser to get lat/lon bounds from query param
 def parse_bbox(q: str) -> Optional[Tuple[float, float, float, float]]:
     if not q:
         return None
@@ -33,6 +35,7 @@ def parse_bbox(q: str) -> Optional[Tuple[float, float, float, float]]:
     lo_lon, hi_lon = sorted((lon1, lon2))
     return (lo_lat, lo_lon, hi_lat, hi_lon)
 
+# check if a point is inside the bbox
 def inside_bbox(lat: float, lon: float, bbox) -> bool:
     if not bbox:
         return True
@@ -40,6 +43,7 @@ def inside_bbox(lat: float, lon: float, bbox) -> bool:
     return (lo_lat <= lat <= hi_lat) and (lo_lon <= lon <= hi_lon)
 
 def parse_lookback_min(q: str) -> int:
+    # minute to get historical data (0 = live only)
     try:
         n = int(q)
         return max(0, n)
@@ -56,7 +60,7 @@ async def ws_endpoint(ws: WebSocket):
 
     consumer = AIOKafkaConsumer(
         bootstrap_servers=BROKERS,
-        value_deserializer=lambda b: json.loads(b),
+        value_deserializer=lambda b: json.loads(b), # each message should be a JSON
         enable_auto_commit=False,
         auto_offset_reset="latest",
         group_id=None
@@ -66,23 +70,22 @@ async def ws_endpoint(ws: WebSocket):
     q: asyncio.Queue = asyncio.Queue(maxsize=CLIENT_BUFFER_MAX)
     last_sent: Dict[str, Tuple[float, float, float]] = {}
 
-    historical_mode = lookback_min > 0
+    historical_mode = lookback_min > 0 # true if lookback_min > 0
     end_ts_ms = None
     passed_end_by_partition: Dict[int, bool] = {}
     history_done_sent = False
 
     try:
         if not historical_mode:
-            # LIVE: subscribe() is synchronous
+            # just return live data
             consumer.subscribe([TOPIC])
         else:
             parts = consumer.partitions_for_topic(TOPIC)
             if not parts:
-                # No partitions yet → just live
+                # just live, no partitions info
                 consumer.subscribe([TOPIC])
             else:
                 tps = [TopicPartition(TOPIC, p) for p in parts]
-                # assign() is synchronous
                 consumer.assign(tps)
 
                 now_ms = int(time.time() * 1000)
@@ -96,7 +99,7 @@ async def ws_endpoint(ws: WebSocket):
                 end_offs = await consumer.end_offsets(tps)
 
                 for tp in tps:
-                    off_meta = offsets.get(tp)
+                    off_meta = offsets.get(tp) # get message from offset for time
                     if off_meta is not None and getattr(off_meta, "offset", None) is not None:
                         consumer.seek(tp, off_meta.offset)
                         passed_end_by_partition[tp.partition] = False
@@ -121,7 +124,7 @@ async def ws_endpoint(ws: WebSocket):
                     lat = rec.get("lat"); lon = rec.get("lon"); vid = rec.get("id")
                     if lat is None or lon is None or not vid:
                         continue
-                    if not inside_bbox(lat, lon, bbox):
+                    if not inside_bbox(lat, lon, bbox): # check if in bbox
                         continue
 
                     # Boundary tracking per partition (only in hybrid)

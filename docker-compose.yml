@@ -74,11 +74,12 @@ services:
       - "8000:8000"
     restart: unless-stopped
 
-# web:
-#   build: ./web
-#   depends_on: [ws-api]
-#   environment:
-#     NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000/ws}
-#   ports:
-#     - "3000:3000"
-#   restart: unless-stopped
+  web:
+    build: ./web
+    depends_on: [ws-api]
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000/ws}
+    ports:
+      - "3000:3000"
+    restart: unless-stopped

@@ -44,6 +44,8 @@ jobs:
               - 'ingestor/**'
             ws_api:
               - 'ws-api/**'
+            web:
+              - 'web/**'
 
       - name: Build matrix
         id: set-matrix
@@ -61,6 +63,7 @@ jobs:
             const all = [
               { service: 'ingestor', context: './ingestor', dockerfile: './ingestor/Dockerfile' },
               { service: 'ws-api',  context: './ws-api',   dockerfile: './ws-api/Dockerfile' },
+              { service: 'web',     context: './web',      dockerfile: './web/Dockerfile' },
             ];
             let include = [];
             if (isTag || forceAll) {

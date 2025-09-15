@@ -375,7 +375,18 @@ function HUD(props: {
                                     .map(([k, v]) => (
                                         <li key={k} className="flex justify-between gap-3">
                                             <span className="text-zinc-400">{k}</span>
-                                            <span className="text-zinc-200">{v}</span>
+                                            {k === "ID" ? (
+                                                <a
+                                                    href={`https://www.vesselfinder.com/vessels/details/${v}`}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="text-zinc-200 hover:text-zinc-50 underline"
+                                                >
+                                                    {v}
+                                                </a>
+                                            ) : (
+                                                <span className="text-zinc-200">{v}</span>
+                                            )}
                                         </li>
                                     ))}
                             </ul>

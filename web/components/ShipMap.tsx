@@ -7,7 +7,6 @@ import { PathLayer, IconLayer } from "@deck.gl/layers";
 import { useShipStream } from "@/hooks/useShipStream";
 import { useShipTracks, ShipTrack, ShipPosition } from "@/hooks/useShipTracks";
 
-// --- small local types to avoid `any` ---
 type ViewStateLike = {
     longitude: number;
     latitude: number;
@@ -17,18 +16,6 @@ type ViewStateLike = {
 };
 type PickingInfo<T> = { object: T | null; picked: boolean };
 type Timestampish = { ts?: number; timestamp?: number };
-
-// extra, optional fields we might show in the HUD
-type HUDSelected = ShipPosition &
-    Partial<{
-        name: string;
-        shipname: string;
-        mmsi: string | number;
-        type: string;
-        shiptype: string;
-        draught: number;
-        destination: string;
-    }>;
 
 const TRI_SVG_URL =
     "data:image/svg+xml;utf8," +
@@ -54,7 +41,6 @@ const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x
 const secondsAgo = (unixSec?: number) =>
     unixSec ? Math.max(0, Math.round(Date.now() / 1000 - unixSec)) : undefined;
 
-// put near the top, after imports
 type XY = [number, number];
 
 const path2D = (t: ShipTrack): XY[] =>
@@ -77,7 +63,8 @@ export default function ShipMap() {
     });
 
     // Stream and build tracks (client-side accumulator)
-    const ships = useShipStream({ bbox, lookbackMin: lookback }, 300); // 300ms batches
+    const { ships, latest: _latest } = useShipStream({ bbox, lookbackMin: lookback }, 300); // 300ms batches
+
     const { tracks, currentPositions } = useShipTracks(ships, {
         maxMinutes: Math.max(lookback, 20),
         maxPointsPerShip: 1000,
@@ -85,7 +72,6 @@ export default function ShipMap() {
         keepaliveSecs: 45,
     });
 
-    // Selection
     const [selectedId, setSelectedId] = useState<string | number | null>(null);
     const selectedPos = useMemo(
         () => currentPositions.find((p: ShipPosition) => p.id === selectedId),
@@ -234,7 +220,7 @@ export default function ShipMap() {
                 fpsApprox={60}
                 pointsCount={pointsCount}
                 shipsCount={shipsCount}
-                selected={selectedPos as HUDSelected | undefined}
+                selected={selectedPos as ShipPosition | undefined}
                 lastUpdatedSeconds={lastUpdatedSeconds}
                 onClear={() => setSelectedId(null)}
             />
@@ -261,7 +247,7 @@ function HUD(props: {
     fpsApprox: number;
     pointsCount: number;
     shipsCount: number;
-    selected?: HUDSelected | null;
+    selected?: ShipPosition | null;
     lastUpdatedSeconds?: number;
     onClear: () => void;
 }) {

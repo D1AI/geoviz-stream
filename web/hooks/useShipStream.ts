@@ -1,10 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ShipPosition } from "@/types/Ship";
-
-const BASE_URL =
-    (process.env.NEXT_PUBLIC_WS_URL as string) || "ws://localhost:8000/ws";
 
 export function useShipStream(
     params?: { bbox?: [number, number, number, number]; lookbackMin?: number },
@@ -13,9 +10,8 @@ export function useShipStream(
     const [ships, setShips] = useState<ShipPosition[]>([]);
     const latest = useRef<Map<string, ShipPosition>>(new Map());
 
-    // Build URL with query params
-    const url = (() => {
-        const u = new URL(BASE_URL);
+    const url = useMemo(() => {
+        const u = new URL("/api/ships", window.location.origin);
         if (params?.bbox) {
             const [lat1, lon1, lat2, lon2] = params.bbox;
             u.searchParams.set("bbox", `${lat1},${lon1},${lat2},${lon2}`);
@@ -23,68 +19,55 @@ export function useShipStream(
         if (typeof params?.lookbackMin === "number") {
             u.searchParams.set("lookback_min", String(params.lookbackMin));
         }
-        return u.toString().replace("http", "ws");
-    })();
+        return u.toString();
+    }, [params?.bbox?.join(","), params?.lookbackMin]);
 
     useEffect(() => {
-        let closed = false;
-        let ws: WebSocket | null = null;
+        const es = new EventSource(url, { withCredentials: false });
 
-        const open = () => {
-            ws = new WebSocket(url);
+        let buffer: ShipPosition[] = [];
+        let flushTimer: any = null;
 
-            ws.onmessage = (event) => {
-                try {
-                    const msg = JSON.parse(event.data);
-                    // Ignore control frames from server
-                    if (msg?.type === "ping" || msg?.type === "history_start" || msg?.type === "history_done") {
-                        return;
-                    }
-                    // Minimal schema guard
-                    if (
-                        !msg ||
-                        typeof msg.id !== "string" ||
-                        typeof msg.lat !== "number" ||
-                        typeof msg.lon !== "number"
-                    ) {
-                        return;
-                    }
-                    latest.current.set(msg.id, {
-                        id: msg.id,
-                        lat: msg.lat,
-                        lon: msg.lon,
-                        sog: msg.sog,
-                        cog: msg.cog,
-                        hdg: msg.hdg,
-                        t: msg.t,
-                    });
-                } catch {
-                    /* ignore malformed frames */
-                }
-            };
-
-            ws.onclose = () => {
-                if (!closed) setTimeout(open, 1000);
-            };
+        const flush = () => {
+            if (buffer.length) {
+                setShips((prev) => {
+                    const next = [...prev, ...buffer];
+                    buffer = [];
+                    return next;
+                });
+            }
         };
 
-        open();
-
-        const timer = window.setInterval(() => {
-            if (latest.current.size) {
-                setShips(Array.from(latest.current.values()));
-                latest.current.clear();
+        es.onmessage = (ev) => {
+            try {
+                const payload = JSON.parse(ev.data);
+                // payload might be a single message or a batch
+                const arr = Array.isArray(payload) ? payload : [payload];
+                for (const msg of arr) {
+                    // de-dup / latest-by-id cache if needed
+                    if (msg?.id != null) latest.current.set(String(msg.id), msg);
+                    buffer.push(msg);
+                }
+                if (!flushTimer) {
+                    flushTimer = setTimeout(() => {
+                        flushTimer = null;
+                        flush();
+                    }, batchMs);
+                }
+            } catch {
+                // ignore parse errors or heartbeat comments
             }
-        }, batchMs);
+        };
+
+        es.onerror = () => {
+            // TODO: show a toast when disconnected
+        };
 
         return () => {
-            closed = true;
-            window.clearInterval(timer);
-            try {
-                ws?.close();
-            } catch { }
+            try { es.close(); } catch { }
+            if (flushTimer) clearTimeout(flushTimer);
         };
     }, [url, batchMs]);
 
-    return ships;
+    return { ships, latest: latest.current };
 }

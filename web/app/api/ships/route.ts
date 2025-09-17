@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
     const lookback = searchParams.get("lookback_min") ?? "";
 
     const upstreamUrl =
-        `ws://${process.env.WS_API_INTERNAL_HOST || "localhost"}:8000/ws` +
+        `ws://${process.env.WS_API_INTERNAL_HOST || "localhost:8000"}/ws` +
         `?${bbox ? `bbox=${encodeURIComponent(bbox)}&` : ""}` +
         `${lookback ? `lookback_min=${encodeURIComponent(lookback)}` : ""}`;
     let ws: WebSocket | null = null;

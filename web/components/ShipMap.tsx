@@ -14,7 +14,6 @@ type ViewStateLike = {
     pitch: number;
     bearing: number;
 };
-type PickingInfo<T> = { object: T | null; picked: boolean };
 type Timestampish = { ts?: number; timestamp?: number };
 
 const TRI_SVG_URL =
@@ -63,7 +62,7 @@ export default function ShipMap() {
     });
 
     // Stream and build tracks (client-side accumulator)
-    const { ships, latest: _latest } = useShipStream({ bbox, lookbackMin: lookback }, 300); // 300ms batches
+    const { ships } = useShipStream({ bbox, lookbackMin: lookback }, 300); // 300ms batches
 
     const { tracks, currentPositions } = useShipTracks(ships, {
         maxMinutes: Math.max(lookback, 20),
@@ -266,23 +265,16 @@ function HUD(props: {
 
     const lookbacks = [5, 15, 30, 60, 120];
     const selectedLabel =
-        selected?.name ??
-        selected?.shipname ??
-        (selected?.mmsi != null ? String(selected.mmsi) : undefined) ??
         (selected?.id != null ? String(selected.id) : undefined);
 
     // pick a few common fields if present
     const fields: Array<[string, string | number | undefined]> = selected
         ? [
             ["ID", selectedLabel],
-            ["MMSI", selected.mmsi],
-            ["Type", selected.type || selected.shiptype],
             ["SOG (kn)", selected.sog != null ? Number(selected.sog).toFixed(1) : undefined],
             ["COG (°)", selected.cog != null ? Math.round(Number(selected.cog)) : undefined],
             ["Lat", selected.lat != null ? Number(selected.lat).toFixed(5) : undefined],
             ["Lon", selected.lon != null ? Number(selected.lon).toFixed(5) : undefined],
-            ["Draught (m)", selected.draught],
-            ["Destination", selected.destination],
         ]
         : [];
 

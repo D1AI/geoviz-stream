@@ -86,9 +86,9 @@ services:
       TOPIC: ships
       AISSTREAM_API_KEY: ${AISSTREAM_API_KEY}
       # whole world:
-      # BBOX_JSON: '[[[-90, -180], [90, 180]]]'
+      BBOX_JSON: '[[[-90, -180], [90, 180]]]'
       # english channel:
-      BBOX_JSON: '[[[48.5, -5.5], [51.5, 2.5]]]'
+      # BBOX_JSON: '[[[48.5, -5.5], [51.5, 2.5]]]'
       # gulf of mexico:
       # BBOX_JSON: '[[[22.0, -97.0], [30.5, -81.0]]]'
       FILTER_MESSAGE_TYPES: "PositionReport"
@@ -105,12 +105,12 @@ services:
       - "8000:8000"
     restart: unless-stopped
 
-  # web:
-  #   build: ./web
-  #   depends_on: [ws-api]
-  #   environment:
-  #     NODE_ENV: production
-  #     NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000/ws}
-  #   ports:
-  #     - "3000:3000"
-  #   restart: unless-stopped
+  web:
+    build: ./web
+    depends_on: [ws-api]
+    environment:
+      NODE_ENV: production
+      WS_API_INTERNAL_HOST: ${WS_API_INTERNAL_HOST:-ws://ws-api:8000/ws}
+    ports:
+      - "3000:3000"
+    restart: unless-stopped

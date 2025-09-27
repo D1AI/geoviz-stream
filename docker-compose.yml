@@ -38,35 +38,43 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
-    entrypoint: ["/bin/sh","-c"]
-    command: |
-      set -eu
-      i=1
-      while [ "$$i" -le 18 ]; do
-        echo "[init] attempt $$i: setting cluster defaults via Admin API..."
-        if rpk cluster config set log_retention_ms 7200000 --api-urls redpanda:9644 \
-        && rpk cluster config set log_segment_ms   900000   --api-urls redpanda:9644 \
-        && rpk cluster config set log_segment_size 16777216 --api-urls redpanda:9644
-        then
-          # read back to assert
-          R=$$(rpk cluster config get log_retention_ms --api-urls redpanda:9644 || true)
-          S=$$(rpk cluster config get log_segment_ms   --api-urls redpanda:9644 || true)
-          B=$$(rpk cluster config get log_segment_size --api-urls redpanda:9644 || true)
-          echo "[init] read-back: retention_ms=$$R segment_ms=$$S segment_size=$$B"
-          if [ "$$R" = "7200000" ] && [ "$$S" = "900000" ] && [ "$$B" = "16777216" ]; then
-            echo "[init] success."
-            exit 0
+    entrypoint: ["/bin/sh"]
+    command:
+      - -eu
+      - -c
+      - |
+        set -eu
+        i=1
+        while [ "$$i" -le 18 ]; do
+          echo "[init] attempt $$i: setting cluster defaults via Admin API..."
+          if rpk cluster config set log_retention_ms 7200000 --api-urls redpanda:9644 \
+          && rpk cluster config set log_segment_ms   900000   --api-urls redpanda:9644 \
+          && rpk cluster config set log_segment_size 16777216 --api-urls redpanda:9644
+          then
+            # read back to assert
+            R=$$(rpk cluster config get log_retention_ms --api-urls redpanda:9644 || true)
+            S=$$(rpk cluster config get log_segment_ms   --api-urls redpanda:9644 || true)
+            B=$$(rpk cluster config get log_segment_size --api-urls redpanda:9644 || true)
+            echo "[init] read-back: retention_ms=$$R segment_ms=$$S segment_size=$$B"
+            if [ "$$R" = "7200000" ] && [ "$$S" = "900000" ] && [ "$$B" = "16777216" ]; then
+              echo "[init] success."
+              exit 0
+            fi
           fi
-        fi
-        i=$$((i+1))
-        sleep 10
-      done
-      echo "[init] FAILED to apply cluster retention settings" >&2
-      exit 1
+          i=$$((i+1))
+          sleep 10
+        done
+        echo "[init] FAILED to apply cluster retention settings" >&2
+        exit 1
+    restart: "no"
 
   console:
     image: redpandadata/console:latest
-    depends_on: [redpanda]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
     environment:
       CONFIG_FILEPATH: /etc/console/config.yaml
     ports:
@@ -81,6 +89,8 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
     environment:
       KAFKA_BROKERS: redpanda:9092
       TOPIC: ships
@@ -97,7 +107,11 @@ services:
 
   ws-api:
     build: ./ws-api
-    depends_on: [redpanda]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
     environment:
       KAFKA_BROKERS: redpanda:9092
       TOPIC: ships
@@ -107,7 +121,11 @@ services:
 
   web:
     build: ./web
-    depends_on: [ws-api]
+    depends_on:
+      ws-api:
+        condition: service_started
+      redpanda-init:
+        condition: service_completed_successfully
     environment:
       NODE_ENV: production
       WS_API_INTERNAL_HOST: ${WS_API_INTERNAL_HOST:-ws://ws-api:8000/ws}

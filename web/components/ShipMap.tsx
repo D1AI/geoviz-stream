@@ -6,6 +6,7 @@ import { DeckGL } from "@deck.gl/react";
 import { PathLayer, IconLayer } from "@deck.gl/layers";
 import { useShipStream } from "@/hooks/useShipStream";
 import { useShipTracks, ShipTrack, ShipPosition } from "@/hooks/useShipTracks";
+import packageJson from "../package.json";
 
 type ViewStateLike = {
     longitude: number;
@@ -34,6 +35,11 @@ const PRESETS: Preset[] = [
     { name: "English Channel", bbox: [48.5, -5.5, 51.5, 2.5] },
     { name: "Gulf of Mexico", bbox: [22.0, -97.0, 30.5, -81.0] },
 ];
+
+const APP_VERSION =
+    typeof packageJson.version === "string" && packageJson.version.length > 0
+        ? packageJson.version
+        : "0.0.0";
 
 // small helpers
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
@@ -258,6 +264,26 @@ function ArrowIcon() {
     );
 }
 
+function VersionTooltip() {
+    return (
+        <div
+            className="group relative flex items-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
+            aria-label={`Application version ${APP_VERSION}`}
+            tabIndex={0}
+        >
+            <span className="flex h-4 w-4 cursor-help select-none items-center justify-center rounded-full border border-zinc-600 text-[9px] font-semibold uppercase text-zinc-300">
+                i
+            </span>
+            <span
+                role="tooltip"
+                className="pointer-events-none absolute left-1/2 top-full z-20 hidden -translate-x-1/2 whitespace-nowrap rounded-md bg-zinc-900 px-2 py-[2px] text-[10px] font-medium text-zinc-100 shadow-lg ring-1 ring-zinc-700 group-hover:block group-focus-visible:block"
+            >
+                v{APP_VERSION}
+            </span>
+        </div>
+    );
+}
+
 function HUD(props: {
     presetIdx: number;
     setPresetIdx: (i: number) => void;
@@ -319,7 +345,10 @@ function HUD(props: {
         <div className="absolute left-4 top-4 z-10 rounded-2xl bg-zinc-900/85 text-zinc-100 backdrop-blur-lg shadow-2xl border border-zinc-700 w-96">
             <div className="p-4">
                 <div className="flex items-center justify-between mb-2">
-                    <h2 className="text-2xl font-semibold tracking-tight">ship-stream</h2>
+                    <div className="flex items-center gap-2">
+                        <h2 className="text-2xl font-semibold tracking-tight">ship-stream</h2>
+                        <VersionTooltip />
+                    </div>
                     <a
                         className="flex items-center gap-2 transition-colors text-zinc-400 hover:text-zinc-200"
                         rel="noopener noreferrer"

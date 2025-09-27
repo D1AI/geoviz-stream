@@ -15,16 +15,39 @@ export type ShipPosition = {
 type TrackPoint = [number, number, number]; // [lon, lat, tSecs]
 export type ShipTrack = { id: string; path: TrackPoint[]; last: ShipPosition };
 
+const toRad = (d: number) => (d * Math.PI) / 180;
+const EARTH_RADIUS_M = 6371000;
+
 function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
-    const toRad = (d: number) => (d * Math.PI) / 180;
-    const R = 6371000;
     const dLat = toRad(lat2 - lat1);
     const dLon = toRad(lon2 - lon1);
     const a =
         Math.sin(dLat / 2) ** 2 +
         Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-    return 2 * R * Math.asin(Math.sqrt(a));
+    return 2 * EARTH_RADIUS_M * Math.asin(Math.sqrt(a));
 }
+
+const bearingDegrees = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const y = Math.sin(toRad(lon2 - lon1)) * Math.cos(toRad(lat2));
+    const x =
+        Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+        Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lon2 - lon1));
+    const brng = Math.atan2(y, x);
+    const deg = (brng * 180) / Math.PI;
+    return (deg + 360) % 360;
+};
+
+const toUnixSeconds = (value: number): number => {
+    if (!Number.isFinite(value)) return Date.now() / 1000;
+    return value > 1e11 ? value / 1000 : value;
+};
+
+const MS_PER_KNOT = 0.514444; // meters per second at 1 knot
+const MAX_SPEED_KNOTS = 60; // ignore jumps faster than roughly 60 kn
+const MAX_JUMP_METERS = 80000; // ignore single hops longer than ~80 km
+
+const finiteOrUndefined = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
 /**
  * Accumulate per-ship tracks on the client.
@@ -59,40 +82,76 @@ export function useShipTracks(
         const cutoff = Date.now() / 1000 - maxMinutes * 60;
         let changed = false;
 
-        for (const sp of ships) {
-            if (!sp.id || sp.lat == null || sp.lon == null) continue;
+        for (const incoming of ships) {
+            if (!incoming?.id || incoming.lat == null || incoming.lon == null) continue;
 
-            const t = typeof sp.t === "number" ? sp.t : Date.now() / 1000;
-            let tr = tracksRef.current.get(sp.id);
+            const lat = Number(incoming.lat);
+            const lon = Number(incoming.lon);
+            const t = toUnixSeconds(typeof incoming.t === "number" ? incoming.t : Date.now() / 1000);
+
+            let tr = tracksRef.current.get(incoming.id);
             if (!tr) {
-                tr = { id: sp.id, path: [], last: sp };
-                tracksRef.current.set(sp.id, tr);
+                tr = { id: incoming.id, path: [], last: { ...incoming, lat, lon, t } };
+                tracksRef.current.set(incoming.id, tr);
                 changed = true;
             }
 
-            const last = tr.path[tr.path.length - 1];
-            const movedEnough =
-                !last || haversineMeters(last[1], last[0], sp.lat, sp.lon) >= minMoveMeters;
+            const lastPoint = tr.path[tr.path.length - 1];
+            const distance = lastPoint ? haversineMeters(lastPoint[1], lastPoint[0], lat, lon) : 0;
+            const timeGap = lastPoint ? Math.max(t - lastPoint[2], 0) : Infinity;
+            const movedEnough = !lastPoint || distance >= minMoveMeters;
+            const needsKeepalive = keepaliveSecs != null && timeGap >= keepaliveSecs;
 
-            const timeGap = !last ? Infinity : t - last[2];
-            const needsKeepalive =
-                keepaliveSecs != null && timeGap >= keepaliveSecs;
+            const incomingSog = finiteOrUndefined(incoming.sog);
+            const incomingCog = finiteOrUndefined(incoming.cog);
+            const incomingHdg = finiteOrUndefined(incoming.hdg);
+
+            const derivedSog = lastPoint && timeGap > 0
+                ? (distance / Math.max(timeGap, 1e-3)) / MS_PER_KNOT
+                : undefined;
+            const derivedCog = lastPoint && distance >= minMoveMeters / 2
+                ? bearingDegrees(lastPoint[1], lastPoint[0], lat, lon)
+                : undefined;
+
+            const candidateSog = incomingSog ?? derivedSog;
+            const candidateCog = incomingCog ?? derivedCog;
+
+            const unrealisticJump = !!lastPoint && (
+                distance > MAX_JUMP_METERS ||
+                (derivedSog !== undefined && derivedSog > MAX_SPEED_KNOTS) ||
+                (incomingSog !== undefined && incomingSog > MAX_SPEED_KNOTS)
+            );
+
+            const previous = tr.last;
+            const next: ShipPosition = {
+                ...incoming,
+                lat,
+                lon,
+                t,
+                sog: candidateSog ?? finiteOrUndefined(previous?.sog),
+                cog: candidateCog ?? finiteOrUndefined(previous?.cog),
+                hdg: incomingHdg ?? finiteOrUndefined(previous?.hdg),
+            };
+
+            if (unrealisticJump) {
+                tr.path = [[lon, lat, t]];
+                tr.last = next;
+                changed = true;
+                continue;
+            }
 
             if (movedEnough || needsKeepalive) {
-                tr.path.push([sp.lon, sp.lat, t]);
-                tr.last = sp;
+                tr.path.push([lon, lat, t]);
+                tr.last = next;
                 changed = true;
 
-                // prune by time
                 while (tr.path.length && tr.path[0][2] < cutoff) tr.path.shift();
 
-                // limit size
                 if (tr.path.length > maxPointsPerShip) {
                     tr.path.splice(0, tr.path.length - maxPointsPerShip);
                 }
             } else {
-                // still update live attributes for tooltip
-                tr.last = sp;
+                tr.last = next;
             }
         }
 

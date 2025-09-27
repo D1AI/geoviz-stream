@@ -7,49 +7,68 @@ export const runtime = "nodejs";
 
 export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
-    const bbox = searchParams.get("bbox") ?? "";
-    const lookback = searchParams.get("lookback_min") ?? "";
+    const bbox = searchParams.get("bbox");
+    const lookback = searchParams.get("lookback_min");
 
-    const upstreamUrl =
-        `${process.env.WS_API_INTERNAL_HOST || "ws://localhost:8000/ws"}` +
-        `?${bbox ? `bbox=${encodeURIComponent(bbox)}&` : ""}` +
-        `${lookback ? `lookback_min=${encodeURIComponent(lookback)}` : ""}`;
+    if (!bbox) {
+        return new Response(JSON.stringify({ error: "bbox query param is required" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+        });
+    }
+
+    const upstream = new URL(process.env.WS_API_INTERNAL_HOST || "ws://localhost:8000/ws");
+    upstream.searchParams.set("bbox", bbox);
+    if (lookback) upstream.searchParams.set("lookback_min", lookback);
+
     let ws: WebSocket | null = null;
     let ping: NodeJS.Timeout | null = null;
     let closed = false;
 
     const stream = new ReadableStream({
         start(controller) {
-            const enc = new TextEncoder();
-
-            const safeEnqueue = (chunk: string) => {
-                if (closed) return;
-                try {
-                    controller.enqueue(enc.encode(chunk));
-                } catch {
-                    // Stream already closed; stop everything.
-                    cleanup();
-                }
-            };
-
-            const sendData = (data: unknown) =>
-                safeEnqueue(`data: ${typeof data === "string" ? data : JSON.stringify(data)}\n\n`);
-
-            const sendComment = (text: string) =>
-                safeEnqueue(`: ${text}\n\n`);
+            const encoder = new TextEncoder();
 
             const cleanup = () => {
                 if (closed) return;
                 closed = true;
-                if (ping) { clearInterval(ping); ping = null; }
-                try { ws?.close(); } catch { }
-                try { controller.close(); } catch { }
+                if (ping) {
+                    clearInterval(ping);
+                    ping = null;
+                }
+                try {
+                    ws?.close();
+                } catch {
+                    // ignore
+                }
+                try {
+                    controller.close();
+                } catch {
+                    // already closed
+                }
             };
 
-            ws = new WebSocket(upstreamUrl);
+            const safeEnqueue = (chunk: string) => {
+                if (closed) return;
+                try {
+                    controller.enqueue(encoder.encode(chunk));
+                } catch {
+                    cleanup();
+                }
+            };
+
+            const sendData = (payload: unknown) => {
+                const body = typeof payload === "string" ? payload : JSON.stringify(payload);
+                safeEnqueue(`data: ${body}\n\n`);
+            };
+
+            const sendComment = (text: string) => {
+                safeEnqueue(`: ${text}\n\n`);
+            };
+
+            ws = new WebSocket(upstream.toString());
 
             ws.on("open", () => {
-                // keep-alive so proxies don’t buffer/close
                 ping = setInterval(() => sendComment("ping"), 15000);
             });
 
@@ -58,9 +77,8 @@ export async function GET(req: NextRequest) {
                 sendData(buf.toString());
             });
 
-            ws.on("error", () => {
-                // Try to notify once, then close/stop writing.
-                sendData({ error: "upstream websocket error" });
+            ws.on("error", (err) => {
+                sendData({ error: "upstream websocket error", detail: err instanceof Error ? err.message : String(err) });
                 cleanup();
             });
 
@@ -68,15 +86,20 @@ export async function GET(req: NextRequest) {
                 cleanup();
             });
 
-            // If browser disconnects, stop writing immediately
             req.signal?.addEventListener?.("abort", cleanup);
         },
         cancel() {
-            // Called if consumer cancels the stream
             closed = true;
-            try { ws?.close(); } catch { }
-            if (ping) { clearInterval(ping); ping = null; }
-        }
+            try {
+                ws?.close();
+            } catch {
+                // ignore
+            }
+            if (ping) {
+                clearInterval(ping);
+                ping = null;
+            }
+        },
     });
 
     return new Response(stream, {

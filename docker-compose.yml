@@ -9,7 +9,6 @@ services:
       - --memory=512M
       - --reserve-memory=0M
       - --check=false
-      # 2 listeners: INTERNAL (for containers) and OUTSIDE (for host tools)
       - --kafka-addr
       - INTERNAL://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
       - --advertise-kafka-addr
@@ -21,7 +20,8 @@ services:
       - --schema-registry-addr
       - 0.0.0.0:8081
     ports:
-      - "9092:19092"   # host -> OUTSIDE listener
+      # expose what you advertise; if you advertise localhost:19092, map 19092 -> 19092 on the host
+      - "19092:19092"
       - "9644:9644"    # admin
       - "8081:8081"    # schema registry
       - "8082:8082"    # pandaproxy
@@ -32,6 +32,37 @@ services:
       retries: 20
     volumes:
       - ./data/redpanda/:/var/lib/redpanda/data
+
+  redpanda-init:
+    image: redpandadata/redpanda:latest
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/sh","-c"]
+    command: |
+      set -eu
+      i=1
+      while [ "$$i" -le 18 ]; do
+        echo "[init] attempt $$i: setting cluster defaults via Admin API..."
+        if rpk cluster config set log_retention_ms 7200000 --api-urls redpanda:9644 \
+        && rpk cluster config set log_segment_ms   900000   --api-urls redpanda:9644 \
+        && rpk cluster config set log_segment_size 16777216 --api-urls redpanda:9644
+        then
+          # read back to assert
+          R=$$(rpk cluster config get log_retention_ms --api-urls redpanda:9644 || true)
+          S=$$(rpk cluster config get log_segment_ms   --api-urls redpanda:9644 || true)
+          B=$$(rpk cluster config get log_segment_size --api-urls redpanda:9644 || true)
+          echo "[init] read-back: retention_ms=$$R segment_ms=$$S segment_size=$$B"
+          if [ "$$R" = "7200000" ] && [ "$$S" = "900000" ] && [ "$$B" = "16777216" ]; then
+            echo "[init] success."
+            exit 0
+          fi
+        fi
+        i=$$((i+1))
+        sleep 10
+      done
+      echo "[init] FAILED to apply cluster retention settings" >&2
+      exit 1
 
   console:
     image: redpandadata/console:latest
@@ -55,9 +86,9 @@ services:
       TOPIC: ships
       AISSTREAM_API_KEY: ${AISSTREAM_API_KEY}
       # whole world:
-      BBOX_JSON: '[[[-90, -180], [90, 180]]]'
+      # BBOX_JSON: '[[[-90, -180], [90, 180]]]'
       # english channel:
-      # BBOX_JSON: '[[[48.5, -5.5], [51.5, 2.5]]]'
+      BBOX_JSON: '[[[48.5, -5.5], [51.5, 2.5]]]'
       # gulf of mexico:
       # BBOX_JSON: '[[[22.0, -97.0], [30.5, -81.0]]]'
       FILTER_MESSAGE_TYPES: "PositionReport"

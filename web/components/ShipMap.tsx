@@ -50,6 +50,7 @@ export default function ShipMap() {
     // HUD state
     const [presetIdx, setPresetIdx] = useState(0);
     const [lookback, setLookback] = useState(60); // minutes
+    const [fps, setFps] = useState(null as number | null);
     const bbox = PRESETS[presetIdx].bbox;
 
     // Map viewState so we can scale icon size by zoom and also clear selection by clicking map
@@ -62,7 +63,10 @@ export default function ShipMap() {
     });
 
     // Stream and build tracks (client-side accumulator)
-    const { ships } = useShipStream({ bbox, lookbackMin: lookback }, 300); // 300ms batches
+    const { ships, historyComplete, connected, error } = useShipStream(
+        { bbox, lookbackMin: lookback },
+        300
+    );
 
     const { tracks, currentPositions } = useShipTracks(ships, {
         maxMinutes: Math.max(lookback, 20),
@@ -148,7 +152,7 @@ export default function ShipMap() {
             sizeUnits: "pixels",
             getSize: (d) => sizeFromSog(d.sog) * zoomScale,
             // Correct orientation: 0° = north, clockwise, matches COG
-            getAngle: (d) => (typeof d.cog === "number" ? Number(d.cog) : 0),
+            getAngle: (d) => (typeof d.cog === "number" ? Number(-1 * d.cog) : 0),
             getColor: (d) => (d.id === selectedId ? [255, 255, 255, 255] : [0, 255, 255, 230]),
             pickable: true,
             autoHighlight: true,
@@ -188,6 +192,18 @@ export default function ShipMap() {
 
     return (
         <div className="fixed inset-0">
+            {!historyComplete && (
+                <div className="absolute left-1/2 top-4 z-20 -translate-x-1/2 rounded-xl bg-zinc-900/85 px-4 py-2 text-sm text-zinc-100 shadow-lg border border-zinc-700">
+                    Loading historical data…
+                </div>
+            )}
+
+            {error && (
+                <div className="absolute left-1/2 top-16 z-20 -translate-x-1/2 rounded-xl bg-red-950/80 px-4 py-2 text-sm text-red-200 shadow-lg border border-red-700">
+                    Stream disconnected: {error}
+                </div>
+            )}
+
             <DeckGL
                 controller
                 viewState={viewState}
@@ -203,6 +219,7 @@ export default function ShipMap() {
                         ? `ID: ${object.id ?? ""}${object.sog != null ? ` · ${Number(object.sog).toFixed(1)} kn` : ""}${object.cog != null ? ` · COG ${Math.round(Number(object.cog))}°` : ""}`
                         : null
                 }
+                _onMetrics={(metrics) => { setFps(metrics.fps) }}
             >
                 <Map
                     reuseMaps
@@ -216,12 +233,15 @@ export default function ShipMap() {
                 setPresetIdx={setPresetIdx}
                 lookback={lookback}
                 setLookback={setLookback}
-                fpsApprox={60}
+                fpsApprox={fps != null ? Math.round(fps) : 0}
                 pointsCount={pointsCount}
                 shipsCount={shipsCount}
                 selected={selectedPos as ShipPosition | undefined}
                 lastUpdatedSeconds={lastUpdatedSeconds}
                 onClear={() => setSelectedId(null)}
+                historyComplete={historyComplete}
+                connected={connected}
+                error={error}
             />
         </div>
     );
@@ -249,6 +269,9 @@ function HUD(props: {
     selected?: ShipPosition | null;
     lastUpdatedSeconds?: number;
     onClear: () => void;
+    historyComplete: boolean;
+    connected: boolean;
+    error: string | null;
 }) {
     const {
         presetIdx,
@@ -261,6 +284,9 @@ function HUD(props: {
         selected,
         lastUpdatedSeconds,
         onClear,
+        historyComplete,
+        connected,
+        error,
     } = props;
 
     const lookbacks = [5, 15, 30, 60, 120];
@@ -277,6 +303,17 @@ function HUD(props: {
             ["Lon", selected.lon != null ? Number(selected.lon).toFixed(5) : undefined],
         ]
         : [];
+
+    const badgeBase =
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold uppercase tracking-wide";
+    const historyBadgeSuccess = `${badgeBase} border-emerald-500 text-emerald-200 bg-emerald-500/10`;
+    const historyBadgePending = `${badgeBase} border-sky-500 text-sky-200 bg-sky-500/10 animate-pulse`;
+    const streamBadgeClass = error
+        ? `${badgeBase} border-red-500 text-red-200 bg-red-500/10`
+        : connected
+            ? `${badgeBase} border-emerald-500 text-emerald-200 bg-emerald-500/10`
+            : `${badgeBase} border-amber-500 text-amber-200 bg-amber-500/10 animate-pulse`;
+    const streamLabel = error ? "error" : connected ? "connected" : "connecting";
 
     return (
         <div className="absolute left-4 top-4 z-10 rounded-2xl bg-zinc-900/85 text-zinc-100 backdrop-blur-lg shadow-2xl border border-zinc-700 w-96">
@@ -296,14 +333,26 @@ function HUD(props: {
                 </div>
                 <p className="text-xs text-zinc-400 mb-3">Ingestor → Kafka → Stream → Deck.GL</p>
 
-                <div className="flex items-center gap-3 text-sm mb-3">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm mb-2">
                     <span className="text-zinc-400">FPS:</span>
                     <span className="font-semibold">{fpsApprox}</span>
-                    <span className="text-zinc-400 ml-2">Total points:</span>
+                    <span className="text-zinc-400 ml-2">Points:</span>
                     <span className="font-semibold">{pointsCount}</span>
                     <span className="text-zinc-400 ml-2">Ships:</span>
                     <span className="font-semibold">{shipsCount}</span>
                 </div>
+                <div className="flex flex-wrap items-center gap-3 text-sm mb-3">
+                    <span className="text-zinc-400">History</span>
+                    <span className={historyComplete ? historyBadgeSuccess : historyBadgePending}>
+                        {historyComplete ? "live" : "loading"}
+                    </span>
+                    <span className="text-zinc-400">Stream</span>
+                    <span className={streamBadgeClass}>{streamLabel}</span>
+                </div>
+
+                {error && (
+                    <p className="mb-3 text-sm text-red-300">{error}</p>
+                )}
 
                 <div className="flex gap-2 mb-3">
                     <select

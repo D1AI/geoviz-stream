@@ -1,11 +1,11 @@
-name: Build & Push Docker Images (changed services only)
+name: Build & Push Docker Images (semver + timestamped tags)
 
 on:
   push:
-    branches: [ "main", "release/**" ]
-    tags: [ "v*.*.*" ]
+    branches: ["main", "release/**"]
+    tags: ["v*.*.*"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
     inputs:
       build_all:
@@ -32,8 +32,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        with: { fetch-depth: 0 }
 
       - name: Detect changes
         id: filter
@@ -107,20 +106,47 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Compute timestamp + short SHA for tags like 20250927-190512-ab12cd3
+      - name: Compute version vars
+        id: vars
+        run: |
+          echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          echo "ts=$(date -u +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+          echo "ref_name=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}-${{ matrix.service }}
+          # Rich, deterministic tag set
           tags: |
-            type=sha
+            # ---- SemVer on tag pushes (vX.Y.Z) ----
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+            # ---- Always add a timestamped commit tag ----
+            type=raw,value=${{ steps.vars.outputs.ts }}-${{ steps.vars.outputs.short_sha }}
+
+            # ---- Default branch convenience tags ----
             type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=tag
+            type=raw,value=main,enable={{is_default_branch}}
+
+            # ---- Branch tags (sanitized) for non-default branches ----
             type=ref,event=branch
+
+            # ---- PR build identifiers (builds only; push is disabled on PRs) ----
+            type=ref,event=pr
+            type=sha,format=short,prefix=sha-
+
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.vars.outputs.ts }}
             org.opencontainers.image.title=${{ matrix.service }}
             org.opencontainers.image.description=${{ matrix.service }} image from ${{ github.repository }}
+            org.opencontainers.image.ref.name=${{ steps.vars.outputs.ref_name }}
 
       - name: Build (PRs) / Push (main & tags & manual)
         uses: docker/build-push-action@v6

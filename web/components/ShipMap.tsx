@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Map } from "react-map-gl/maplibre";
 import { DeckGL } from "@deck.gl/react";
 import { PathLayer, IconLayer } from "@deck.gl/layers";
@@ -48,8 +48,68 @@ const secondsAgo = (unixSec?: number) =>
 
 type XY = [number, number];
 
-const path2D = (t: ShipTrack): XY[] =>
-    t.path.map(([x, y]) => [x, y] as XY);
+const trackVersion = (track: ShipTrack): string => {
+    const length = track.path.length;
+    if (length === 0) return "0";
+    const last = track.path[length - 1];
+    const lastTimestamp = last?.[2] ?? 0;
+    return `${length}:${lastTimestamp}`;
+};
+
+const pathCache = new WeakMap<ShipTrack, { version: string; coords: XY[] }>();
+const recentPathCache = new WeakMap<ShipTrack, { version: string; cutoff: number; coords: XY[] }>();
+
+const getPath2D = (track: ShipTrack): XY[] => {
+    const version = trackVersion(track);
+    const cached = pathCache.get(track);
+    if (cached && cached.version === version) return cached.coords;
+
+    const coords = track.path.map(([lon, lat]) => [lon, lat] as XY);
+    pathCache.set(track, { version, coords });
+    return coords;
+};
+
+const getRecentPath2D = (track: ShipTrack, cutoff: number): XY[] => {
+    const version = trackVersion(track);
+    const cached = recentPathCache.get(track);
+    if (cached && cached.version === version && cached.cutoff === cutoff) return cached.coords;
+
+    const coords: XY[] = [];
+    for (let i = 0; i < track.path.length; i += 1) {
+        const point = track.path[i];
+        if (point[2] >= cutoff) coords.push([point[0], point[1]] as XY);
+    }
+
+    if (coords.length < 2) {
+        const empty: XY[] = [];
+        recentPathCache.set(track, { version, cutoff, coords: empty });
+        return empty;
+    }
+
+    recentPathCache.set(track, { version, cutoff, coords });
+    return coords;
+};
+
+const useIsMobile = (maxWidth = 768) => {
+    const [isMobile, setIsMobile] = useState(false);
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        const media = window.matchMedia(`(max-width: ${maxWidth}px)`);
+        const update = () => setIsMobile(media.matches);
+        update();
+
+        if (typeof media.addEventListener === "function") {
+            media.addEventListener("change", update);
+            return () => media.removeEventListener("change", update);
+        }
+
+        media.addListener(update);
+        return () => media.removeListener(update);
+    }, [maxWidth]);
+
+    return isMobile;
+};
 
 
 export default function ShipMap() {
@@ -82,6 +142,7 @@ export default function ShipMap() {
     });
 
     const [selectedId, setSelectedId] = useState<string | number | null>(null);
+    const isMobile = useIsMobile();
     const selectedPos = useMemo(
         () => currentPositions.find((p: ShipPosition) => p.id === selectedId),
         [currentPositions, selectedId]
@@ -90,6 +151,33 @@ export default function ShipMap() {
         () => tracks.find((t: ShipTrack) => t.id === selectedId),
         [tracks, selectedId]
     );
+
+    // Recent-tail window (minutes) for crisper highlight
+    const recentMinutes = Math.min(lookback, 10);
+
+    const longTailTracks = useMemo(
+        () => tracks.filter((t) => t.path.length >= 2),
+        [tracks]
+    );
+
+    const recentTail = useMemo(() => {
+        const cutoff = Date.now() / 1000 - recentMinutes * 60;
+        const tracksWithRecent: ShipTrack[] = [];
+        for (const track of longTailTracks) {
+            if (getRecentPath2D(track, cutoff).length >= 2) {
+                tracksWithRecent.push(track);
+            }
+        }
+        return { tracks: tracksWithRecent, cutoff };
+    }, [longTailTracks, recentMinutes]);
+
+    const recentTailTracks = recentTail.tracks;
+    const recentTailCutoff = recentTail.cutoff;
+
+    const selectedPath = useMemo(() => {
+        if (!selectedTrack || selectedTrack.path.length < 2) return null;
+        return selectedTrack;
+    }, [selectedTrack]);
 
     const latestTs =
         (selectedPos as (ShipPosition & Timestampish) | undefined)?.ts ??
@@ -112,15 +200,11 @@ export default function ShipMap() {
         return clamp(scaled, 0.25, 1.2);
     }, [viewState.zoom]);
 
-    // Recent-tail window (minutes) for crisper highlight
-    const recentMinutes = Math.min(lookback, 10);
-
-    const layers = useMemo(() => {
-        // 1) Dim long-tail
+    const trailLayers = useMemo(() => {
         const longTail = new PathLayer<ShipTrack>({
             id: "trails-long",
-            data: tracks.filter((t) => t.path.length >= 2),
-            getPath: (d) => path2D(d),             // <-- typed tuples
+            data: longTailTracks,
+            getPath: getPath2D,
             widthUnits: "pixels",
             getWidth: 2,
             capRounded: true,
@@ -129,16 +213,10 @@ export default function ShipMap() {
             pickable: false,
         });
 
-        // 2) Recent-tail (last N minutes only), brighter and slightly thicker
-        const cutoff = Date.now() / 1000 - recentMinutes * 60;
-        const recentData: ShipTrack[] = tracks
-            .map((t) => ({ ...t, path: t.path.filter((p) => p[2] >= cutoff) }))
-            .filter((t) => t.path.length >= 2);
-
-        const recentTail = new PathLayer<ShipTrack>({
+        const recentTailLayer = new PathLayer<ShipTrack>({
             id: "trails-recent",
-            data: recentData,
-            getPath: (d) => path2D(d),             // <-- typed tuples
+            data: recentTailTracks,
+            getPath: (d) => getRecentPath2D(d, recentTailCutoff),
             widthUnits: "pixels",
             getWidth: 3,
             capRounded: true,
@@ -147,48 +225,57 @@ export default function ShipMap() {
             pickable: false,
         });
 
-        // 3) Ships as oriented triangles (IconLayer)
-        const shipsLayer = new IconLayer<ShipPosition>({
-            id: "ships",
-            data: currentPositions,
-            getPosition: (d) => [d.lon, d.lat],
-            iconAtlas: TRI_SVG_URL,
-            iconMapping: { ship: { x: 0, y: 0, width: 64, height: 64, mask: false } },
-            getIcon: () => "ship",
-            sizeUnits: "pixels",
-            getSize: (d) => sizeFromSog(d.sog) * zoomScale,
-            // Correct orientation: 0° = north, clockwise, matches COG
-            getAngle: (d) => (typeof d.cog === "number" ? Number(-1 * d.cog) : 0),
-            getColor: (d) => (d.id === selectedId ? [255, 255, 255, 255] : [0, 255, 255, 230]),
-            pickable: true,
-            autoHighlight: true,
-            // DeckGL's pickingInfo type is complex; use `any` and destructure `object` for compatibility
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            onClick: ({ object }: any) => {
-                if (object) setSelectedId(object.id);
-            },
-            updateTriggers: {
-                getSize: [zoomScale],
-                getColor: [selectedId],
-            },
-        });
+        const layersArray = [longTail, recentTailLayer];
 
-        // --- selected track ---
-        const selectedPath = selectedTrack && selectedTrack.path.length >= 2 ? [selectedTrack] : [];
-        const selectedTail = new PathLayer<ShipTrack>({
-            id: "selected-track",
-            data: selectedPath,
-            getPath: (d) => path2D(d),             // <-- typed tuples
-            widthUnits: "pixels",
-            getWidth: 4,
-            capRounded: true,
-            jointRounded: true,
-            getColor: [255, 255, 255, 220],
-            pickable: false,
-        });
+        if (selectedPath) {
+            layersArray.push(
+                new PathLayer<ShipTrack>({
+                    id: "selected-track",
+                    data: [selectedPath],
+                    getPath: getPath2D,
+                    widthUnits: "pixels",
+                    getWidth: 4,
+                    capRounded: true,
+                    jointRounded: true,
+                    getColor: [255, 255, 255, 220],
+                    pickable: false,
+                })
+            );
+        }
 
-        return [longTail, recentTail, shipsLayer, selectedTail];
-    }, [tracks, currentPositions, recentMinutes, zoomScale, selectedId, selectedTrack]);
+        return layersArray;
+    }, [longTailTracks, recentTailTracks, recentTailCutoff, selectedPath]);
+
+    const shipsLayer = useMemo(
+        () =>
+            new IconLayer<ShipPosition>({
+                id: "ships",
+                data: currentPositions,
+                getPosition: (d) => [d.lon, d.lat],
+                iconAtlas: TRI_SVG_URL,
+                iconMapping: { ship: { x: 0, y: 0, width: 64, height: 64, mask: false } },
+                getIcon: () => "ship",
+                sizeUnits: "pixels",
+                getSize: (d) => sizeFromSog(d.sog),
+                sizeScale: zoomScale,
+                // Correct orientation: 0° = north, clockwise, matches COG
+                getAngle: (d) => (typeof d.cog === "number" ? Number(-1 * d.cog) : 0),
+                getColor: (d) => (d.id === selectedId ? [255, 255, 255, 255] : [0, 255, 255, 230]),
+                pickable: true,
+                autoHighlight: true,
+                // DeckGL's pickingInfo type is complex; use `any` and destructure `object` for compatibility
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                onClick: ({ object }: any) => {
+                    if (object) setSelectedId(object.id);
+                },
+                updateTriggers: {
+                    getColor: [selectedId],
+                },
+            }),
+        [currentPositions, selectedId, zoomScale]
+    );
+
+    const layers = useMemo(() => [...trailLayers, shipsLayer], [trailLayers, shipsLayer]);
 
     const shipsCount = currentPositions.length;
     const pointsCount = useMemo(
@@ -234,21 +321,23 @@ export default function ShipMap() {
                 />
             </DeckGL>
 
-            <HUD
-                presetIdx={presetIdx}
-                setPresetIdx={setPresetIdx}
-                lookback={lookback}
-                setLookback={setLookback}
-                fpsApprox={fps != null ? Math.round(fps) : 0}
-                pointsCount={pointsCount}
-                shipsCount={shipsCount}
-                selected={selectedPos as ShipPosition | undefined}
-                lastUpdatedSeconds={lastUpdatedSeconds}
-                onClear={() => setSelectedId(null)}
-                historyComplete={historyComplete}
-                connected={connected}
-                error={error}
-            />
+            {!isMobile && (
+                <HUD
+                    presetIdx={presetIdx}
+                    setPresetIdx={setPresetIdx}
+                    lookback={lookback}
+                    setLookback={setLookback}
+                    fpsApprox={fps != null ? Math.round(fps) : 0}
+                    pointsCount={pointsCount}
+                    shipsCount={shipsCount}
+                    selected={selectedPos as ShipPosition | undefined}
+                    lastUpdatedSeconds={lastUpdatedSeconds}
+                    onClear={() => setSelectedId(null)}
+                    historyComplete={historyComplete}
+                    connected={connected}
+                    error={error}
+                />
+            )}
         </div>
     );
 }

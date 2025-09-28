@@ -45,6 +45,8 @@ jobs:
               - 'ws-api/**'
             web:
               - 'web/**'
+            archiver:
+              - 'archiver/**'
 
       - name: Build matrix
         id: set-matrix
@@ -60,12 +62,14 @@ jobs:
               ingestor: `${{ steps.filter.outputs.ingestor }}` === 'true',
               wsapi:    `${{ steps.filter.outputs.ws_api }}` === 'true',
               web:      `${{ steps.filter.outputs.web }}` === 'true',
+              archiver:      `${{ steps.filter.outputs.archiver }}` === 'true',
             };
 
             const all = [
               { service: 'ingestor', context: './ingestor', dockerfile: './ingestor/Dockerfile' },
               { service: 'ws-api',   context: './ws-api',   dockerfile: './ws-api/Dockerfile' },
               { service: 'web',      context: './web',      dockerfile: './web/Dockerfile' },
+              { service: 'archiver', context: './archiver', dockerfile: './archiver/Dockerfile' },
             ];
 
             let include = [];
@@ -75,6 +79,7 @@ jobs:
               if (changed.ingestor) include.push(all[0]);
               if (changed.wsapi)    include.push(all[1]);
               if (changed.web)      include.push(all[2]);
+              if (changed.archiver) include.push(all[3]);
             }
 
             core.info(`Selected services: ${include.map(s => s.service).join(', ') || '(none)'}`);

@@ -132,3 +132,43 @@ services:
   #   ports:
   #     - "3000:3000"
   #   restart: unless-stopped
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_DB: ships
+      POSTGRES_USER: ships
+      POSTGRES_PASSWORD: ships
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ships -d ships"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - ./data/timescaledb:/var/lib/postgresql/data
+      - ./archiver/01_init_timescale.sql:/docker-entrypoint-initdb.d/01_init_timescale.sql:ro
+
+  archiver:
+    build: ./archiver
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      timescaledb:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      TOPIC: ships
+      GROUP_ID: ships-archiver
+      PGHOST: timescaledb
+      PGPORT: "5432"
+      PGDATABASE: ships
+      PGUSER: ships
+      PGPASSWORD: ships
+      BATCH_MAX_ROWS: "2000"
+      FLUSH_SECONDS: "2"
+    restart: unless-stopped

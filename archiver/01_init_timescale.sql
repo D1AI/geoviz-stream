@@ -1,4 +1,5 @@
 CREATE EXTENSION IF NOT EXISTS timescaledb;
+CREATE EXTENSION IF NOT EXISTS postgis;
 
 -- Minimal schema for AIS-like "PositionReport".
 CREATE TABLE IF NOT EXISTS ship_positions (
@@ -6,6 +7,7 @@ CREATE TABLE IF NOT EXISTS ship_positions (
   mmsi BIGINT            NOT NULL,
   lat  DOUBLE PRECISION  NOT NULL,
   lon  DOUBLE PRECISION  NOT NULL,
+  geom geometry(Point, 4326) NOT NULL,
   sog  DOUBLE PRECISION,
   cog  DOUBLE PRECISION,
   hdg  DOUBLE PRECISION,
@@ -22,6 +24,8 @@ SELECT create_hypertable('ship_positions', 'ts', if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS ship_positions_ts_idx ON ship_positions (ts DESC);
 -- Filter by vessel + time:
 CREATE INDEX IF NOT EXISTS ship_positions_mmsi_ts_idx ON ship_positions (mmsi, ts DESC);
+-- Spatial searches by bounding box or proximity:
+CREATE INDEX IF NOT EXISTS ship_positions_geom_idx ON ship_positions USING GIST (geom);
 
 -- Enable columnar compression on older chunks:
 ALTER TABLE ship_positions SET (

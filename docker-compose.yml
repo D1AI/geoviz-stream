@@ -134,7 +134,7 @@ services:
   #   restart: unless-stopped
 
   timescaledb:
-    image: timescale/timescaledb:latest-pg16
+    image: timescale/timescaledb-ha:pg16
     environment:
       POSTGRES_DB: ships
       POSTGRES_USER: ships
@@ -150,7 +150,7 @@ services:
     volumes:
       - ./data/timescaledb:/var/lib/postgresql/data
       - ./archiver/01_init_timescale.sql:/docker-entrypoint-initdb.d/01_init_timescale.sql:ro
-
+  
   archiver:
     build: ./archiver
     depends_on:

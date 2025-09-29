@@ -22,8 +22,19 @@ BATCH_MAX_ROWS = int(os.getenv("BATCH_MAX_ROWS", "2000"))
 FLUSH_SECONDS = float(os.getenv("FLUSH_SECONDS", "2"))
 
 INSERT_SQL = """
-INSERT INTO ship_positions (ts, mmsi, lat, lon, sog, cog, hdg, mt, raw)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+INSERT INTO ship_positions (ts, mmsi, lat, lon, sog, cog, hdg, mt, raw, geom)
+VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8,
+    $9::jsonb,
+    ST_SetSRID(ST_MakePoint($4, $3), 4326)
+)
 ON CONFLICT (mmsi, ts, mt) DO NOTHING
 """
 

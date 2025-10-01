@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import { Map } from "react-map-gl/maplibre";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { Map as MapView } from "react-map-gl/maplibre";
 import { DeckGL } from "@deck.gl/react";
 import { PathLayer, IconLayer } from "@deck.gl/layers";
 import { useShipStream } from "@/hooks/useShipStream";
@@ -35,6 +35,10 @@ const PRESETS: Preset[] = [
     { name: "English Channel", bbox: [48.5, -5.5, 51.5, 2.5] },
     { name: "Gulf of Mexico", bbox: [22.0, -97.0, 30.5, -81.0] },
 ];
+
+const DEFAULT_SHIP_COLOR: [number, number, number, number] = [0, 255, 255, 230];
+const SELECTED_SHIP_COLOR: [number, number, number, number] = [255, 255, 255, 255];
+const SHIP_ICON_MAPPING = { ship: { x: 0, y: 0, width: 64, height: 64, mask: false } } as const;
 
 const APP_VERSION =
     typeof packageJson.version === "string" && packageJson.version.length > 0
@@ -141,15 +145,22 @@ export default function ShipMap() {
         keepaliveSecs: 45,
     });
 
-    const [selectedId, setSelectedId] = useState<string | number | null>(null);
+    const [selectedId, setSelectedId] = useState<ShipTrack["id"] | null>(null);
     const isMobile = useIsMobile();
-    const selectedPos = useMemo(
-        () => currentPositions.find((p: ShipPosition) => p.id === selectedId),
-        [currentPositions, selectedId]
-    );
+
+    const trackMap = useMemo(() => {
+        const next = new Map<ShipTrack["id"], ShipTrack>();
+        for (const track of tracks) next.set(track.id, track);
+        return next;
+    }, [tracks]);
+
     const selectedTrack = useMemo(
-        () => tracks.find((t: ShipTrack) => t.id === selectedId),
-        [tracks, selectedId]
+        () => (selectedId != null ? trackMap.get(selectedId) ?? null : null),
+        [trackMap, selectedId]
+    );
+    const selectedPos = useMemo(
+        () => (selectedId != null ? trackMap.get(selectedId)?.last : undefined),
+        [trackMap, selectedId]
     );
 
     // Recent-tail window (minutes) for crisper highlight
@@ -200,6 +211,11 @@ export default function ShipMap() {
         return clamp(scaled, 0.25, 1.2);
     }, [viewState.zoom]);
 
+    const getRecentTailPath = useCallback(
+        (track: ShipTrack) => getRecentPath2D(track, recentTailCutoff),
+        [recentTailCutoff]
+    );
+
     const trailLayers = useMemo(() => {
         const longTail = new PathLayer<ShipTrack>({
             id: "trails-long",
@@ -216,7 +232,7 @@ export default function ShipMap() {
         const recentTailLayer = new PathLayer<ShipTrack>({
             id: "trails-recent",
             data: recentTailTracks,
-            getPath: (d) => getRecentPath2D(d, recentTailCutoff),
+            getPath: getRecentTailPath,
             widthUnits: "pixels",
             getWidth: 3,
             capRounded: true,
@@ -244,35 +260,50 @@ export default function ShipMap() {
         }
 
         return layersArray;
-    }, [longTailTracks, recentTailTracks, recentTailCutoff, selectedPath]);
+    }, [getRecentTailPath, longTailTracks, recentTailTracks, selectedPath]);
+
+    const getShipPosition = useCallback(
+        (d: ShipPosition) => [d.lon, d.lat] as [number, number],
+        []
+    );
+
+    const getShipColor = useCallback(
+        (d: ShipPosition) =>
+            (d.id === selectedId ? SELECTED_SHIP_COLOR : DEFAULT_SHIP_COLOR),
+        [selectedId]
+    );
+
+    const handleShipClick = useCallback(
+        ({ object }: { object?: ShipPosition | null }) => {
+            if (object?.id != null) setSelectedId(object.id);
+        },
+        []
+    );
+
+    const colorTrigger = selectedId ?? "__none__";
 
     const shipsLayer = useMemo(
         () =>
             new IconLayer<ShipPosition>({
                 id: "ships",
                 data: currentPositions,
-                getPosition: (d) => [d.lon, d.lat],
+                getPosition: getShipPosition,
                 iconAtlas: TRI_SVG_URL,
-                iconMapping: { ship: { x: 0, y: 0, width: 64, height: 64, mask: false } },
+                iconMapping: SHIP_ICON_MAPPING,
                 getIcon: () => "ship",
                 sizeUnits: "pixels",
                 getSize: (d) => sizeFromSog(d.sog),
                 sizeScale: zoomScale,
-                // Correct orientation: 0° = north, clockwise, matches COG
                 getAngle: (d) => (typeof d.cog === "number" ? Number(-1 * d.cog) : 0),
-                getColor: (d) => (d.id === selectedId ? [255, 255, 255, 255] : [0, 255, 255, 230]),
+                getColor: getShipColor,
                 pickable: true,
                 autoHighlight: true,
-                // DeckGL's pickingInfo type is complex; use `any` and destructure `object` for compatibility
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                onClick: ({ object }: any) => {
-                    if (object) setSelectedId(object.id);
-                },
+                onClick: handleShipClick,
                 updateTriggers: {
-                    getColor: [selectedId],
+                    getColor: colorTrigger,
                 },
             }),
-        [currentPositions, selectedId, zoomScale]
+        [colorTrigger, currentPositions, getShipColor, getShipPosition, handleShipClick, zoomScale]
     );
 
     const layers = useMemo(() => [...trailLayers, shipsLayer], [trailLayers, shipsLayer]);
@@ -314,7 +345,7 @@ export default function ShipMap() {
                 }
                 _onMetrics={(metrics) => { setFps(metrics.fps) }}
             >
-                <Map
+                <MapView
                     reuseMaps
                     mapStyle="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
                     style={{ width: "100%", height: "100%" }}

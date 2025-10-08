@@ -1,0 +1,37 @@
+services:
+  notebooks:
+    build:
+      dockerfile: Dockerfile.notebooks
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/workspace
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-ships}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ships}
+      - POSTGRES_HOST=${POSTGRES_HOST:-host.docker.internal}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-ships}
+  
+  # archiver:
+  #   build:
+  #     dockerfile: Dockerfile
+  #   depends_on:
+  #     redpanda:
+  #       condition: service_healthy
+  #     redpanda-init:
+  #       condition: service_completed_successfully
+  #     timescaledb:
+  #       condition: service_healthy
+  #   environment:
+  #     KAFKA_BROKERS: redpanda:9092
+  #     TOPIC: ships
+  #     GROUP_ID: ships-archiver
+  #     PGHOST: timescaledb
+  #     PGPORT: "5432"
+  #     PGDATABASE: ships
+  #     PGUSER: ships
+  #     PGPASSWORD: ships
+  #     BATCH_MAX_ROWS: "2000"
+  #     FLUSH_SECONDS: "2"
+  #   restart: unless-stopped

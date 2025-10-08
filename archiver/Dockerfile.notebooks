@@ -1,0 +1,25 @@
+FROM python:3.11-slim
+
+# Install system deps needed for psycopg2 and clean up apt caches to keep the image small.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up a working directory for notebooks.
+WORKDIR /workspace
+
+# Install JupyterLab and common EDA libraries (add more in requirements.txt if needed).
+RUN pip install --no-cache-dir \
+        jupyterlab \
+        pandas \
+        numpy \
+        matplotlib \
+        seaborn \
+        psycopg2-binary \
+        sqlalchemy
+
+# Expose the JupyterLab port.
+EXPOSE 8888
+
+# By default start JupyterLab listening on all interfaces; disable auth for local dev.
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--ServerApp.allow_origin=*", "--IdentityProvider.token=", "--IdentityProvider.password="]

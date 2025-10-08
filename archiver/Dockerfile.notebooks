@@ -16,7 +16,8 @@ RUN pip install --no-cache-dir \
         matplotlib \
         seaborn \
         psycopg2-binary \
-        sqlalchemy
+        sqlalchemy \
+        datashader
 
 # Expose the JupyterLab port.
 EXPOSE 8888

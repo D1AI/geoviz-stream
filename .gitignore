@@ -39,6 +39,7 @@ yarn-error.log*
 
 .vscode/
 
-.ipynb_checkpoints/*
+.ipynb_checkpoints*
+.Trash-0*
 
 *.csv.gz

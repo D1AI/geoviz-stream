@@ -119,19 +119,19 @@ services:
       - "8000:8000"
     restart: unless-stopped
 
-  # web:
-  #   build: ./web
-  #   depends_on:
-  #     ws-api:
-  #       condition: service_started
-  #     redpanda-init:
-  #       condition: service_completed_successfully
-  #   environment:
-  #     NODE_ENV: production
-  #     WS_API_INTERNAL_HOST: ${WS_API_INTERNAL_HOST:-ws://ws-api:8000/ws}
-  #   ports:
-  #     - "3000:3000"
-  #   restart: unless-stopped
+  web:
+    build: ./web
+    depends_on:
+      ws-api:
+        condition: service_started
+      redpanda-init:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      WS_API_INTERNAL_HOST: ${WS_API_INTERNAL_HOST:-ws://ws-api:8000/ws}
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
 
   timescaledb:
     image: timescale/timescaledb-ha:pg16

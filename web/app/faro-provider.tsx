@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { faro, getWebInstrumentations, initializeFaro } from "@grafana/faro-web-sdk";
 import { TracingInstrumentation } from "@grafana/faro-web-tracing";
+import { ReactIntegration } from "@grafana/faro-react";
 
 const DEFAULT_ENDPOINT = "/api/faro";
 
@@ -18,8 +19,14 @@ export default function FaroProvider() {
       return;
     }
 
+    const webInstrumentations = getWebInstrumentations({
+      captureConsole: true,
+      dom: true,
+      webVitals: true,
+    });
+
     try {
-      initializeFaro({
+      const instance = initializeFaro({
         url: endpoint,
         app: {
           name: process.env.NEXT_PUBLIC_FARO_APP_NAME || "unknown_service:webjs",
@@ -28,10 +35,13 @@ export default function FaroProvider() {
           environment: process.env.NEXT_PUBLIC_VERCEL_ENV || "development",
         },
         instrumentations: [
-          ...getWebInstrumentations(),
+          ...webInstrumentations,
+          new ReactIntegration(),
           new TracingInstrumentation(),
         ],
       });
+
+      instance.api.pushLog(["faro_init", { ok: true, endpoint }]);
     } catch (error) {
       console.error("[faro] Failed to initialise", error);
     }

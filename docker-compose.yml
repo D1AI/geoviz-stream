@@ -119,19 +119,19 @@ services:
       - "8000:8000"
     restart: unless-stopped
 
-  web:
-    build: ./web
-    depends_on:
-      ws-api:
-        condition: service_started
-      redpanda-init:
-        condition: service_completed_successfully
-    environment:
-      NODE_ENV: production
-      WS_API_INTERNAL_HOST: ${WS_API_INTERNAL_HOST:-ws://ws-api:8000/ws}
-    ports:
-      - "3000:3000"
-    restart: unless-stopped
+  # web:
+  #   build: ./web
+  #   depends_on:
+  #     ws-api:
+  #       condition: service_started
+  #     redpanda-init:
+  #       condition: service_completed_successfully
+  #   environment:
+  #     NODE_ENV: production
+  #     WS_API_INTERNAL_HOST: ${WS_API_INTERNAL_HOST:-ws://ws-api:8000/ws}
+  #   ports:
+  #     - "3000:3000"
+  #   restart: unless-stopped
 
   timescaledb:
     image: timescale/timescaledb-ha:pg16
@@ -171,4 +171,73 @@ services:
       PGPASSWORD: ships
       BATCH_MAX_ROWS: "2000"
       FLUSH_SECONDS: "2"
+    restart: unless-stopped
+
+  # observability stack
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: grafana
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./data/prometheus:/prometheus
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: loki
+    command: ["-config.file=/etc/loki/loki.yml"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./observability/loki/loki.yml:/etc/loki/loki.yml:ro
+      - ./data/loki:/loki
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.6.0
+    container_name: tempo
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    ports:
+      - "3200:3200"     # Tempo HTTP (querier)
+    volumes:
+      - ./observability/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - ./data/tempo:/var/tempo
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.11.2
+    command: ["run", "--stability.level=experimental", "/etc/alloy/config.alloy"]
+    depends_on:
+      - loki
+      - tempo
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+    ports:
+      - "12347:12347"   # Faro receiver (browser -> Alloy)
+      # If you want host OTLP too, add:
+      # - "14318:4318"
+      # - "14317:4317"
     restart: unless-stopped

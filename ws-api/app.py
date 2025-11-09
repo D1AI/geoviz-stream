@@ -5,12 +5,21 @@ from typing import Optional, Tuple, Dict
 from fastapi import FastAPI, WebSocket
 from aiokafka import AIOKafkaConsumer, TopicPartition
 import orjson as json
-
+from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import Counter
 
 BROKERS = os.getenv("KAFKA_BROKERS", "redpanda:9092")
 TOPIC = os.getenv("TOPIC", "ships")
 
+MESSAGES_SENT = Counter(
+    "ships_ws_messages_total",
+    "Total number of ship messages sent to websocket clients",
+    ["app"],
+)
+
 app = FastAPI(title="AIS WS")
+
+Instrumentator().instrument(app).expose(app)
 
 # extremely simple healthcheck for server health
 @app.get("/healthz")
@@ -129,6 +138,7 @@ async def ws_endpoint(ws: WebSocket):
                         await ws.send_text('{"type":"history_complete"}')
 
             try:
+                MESSAGES_SENT.labels(app="ws-api").inc()
                 await ws.send_text(json.dumps(rec).decode("utf-8"))
             except Exception:
                 break

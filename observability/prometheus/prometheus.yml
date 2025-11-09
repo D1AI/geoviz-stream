@@ -1,16 +1,12 @@
 global:
-  scrape_interval: 10s
-  evaluation_interval: 10s
+  scrape_interval: 5s
 
 scrape_configs:
-  - job_name: 'alloy'
+  - job_name: 'redpanda'
     static_configs:
-      - targets: ['alloy:8889']
+      - targets: ['redpanda:9644']
 
-  - job_name: 'loki'
+  - job_name: 'ws-api'
+    metrics_path: /metrics
     static_configs:
-      - targets: ['loki:3100']
-
-  - job_name: 'tempo'
-    static_configs:
-      - targets: ['tempo:3200']
+      - targets: ['ws-api:8000']

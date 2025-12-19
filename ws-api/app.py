@@ -6,7 +6,7 @@ from fastapi import FastAPI, WebSocket
 from aiokafka import AIOKafkaConsumer, TopicPartition
 import orjson as json
 from prometheus_fastapi_instrumentator import Instrumentator
-from prometheus_client import Counter
+from prometheus_client import Counter, Gauge, Histogram
 
 BROKERS = os.getenv("KAFKA_BROKERS", "redpanda:9092")
 TOPIC = os.getenv("TOPIC", "ships")
@@ -15,6 +15,21 @@ MESSAGES_SENT = Counter(
     "ships_ws_messages_total",
     "Total number of ship messages sent to websocket clients",
     ["app"],
+)
+CONNECTED_CLIENTS = Gauge(
+    "ships_ws_connected_clients",
+    "Number of active websocket clients",
+    ["app"],
+)
+E2E_LATENCY = Histogram(
+    "ships_ws_end_to_end_latency_seconds",
+    "End-to-end latency from Kafka record timestamp to ws-api send time",
+    ["app", "topic"],
+    buckets=(
+        0.05, 0.1, 0.25, 0.5,
+        1.0, 2.0, 5.0, 10.0,
+        30.0, 60.0, 120.0
+    ),
 )
 
 app = FastAPI(title="AIS WS")
@@ -57,98 +72,114 @@ def parse_lookback_min(q: Optional[str]) -> Optional[int]:
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
-
-    bbox_param = ws.query_params.get("bbox")
-    lookback_param = ws.query_params.get("lookback_min")
-
-    bbox = parse_bbox(bbox_param) if bbox_param else None
-    lookback_min = parse_lookback_min(lookback_param)
-
-    if bbox is None:
-        await ws.send_text('{"error":"query param bbox must be lat1,lon1,lat2,lon2"}')
-        await ws.close(code=4400)
-        return
-
-    if lookback_min is None:
-        await ws.send_text('{"error":"query param lookback_min must be an integer"}')
-        await ws.close(code=4401)
-        return
-
-    consumer = AIOKafkaConsumer(
-        bootstrap_servers=BROKERS,
-        value_deserializer=lambda b: json.loads(b),
-        enable_auto_commit=False,
-        auto_offset_reset="latest",
-        group_id=None,
-    )
-
-    history_check: Optional[Dict[int, bool]] = None
-    history_cutoff_ms: Optional[int] = None
-
-    await consumer.start()
-
+    client_registered = False
     try:
-        if lookback_min == 0:
-            consumer.subscribe([TOPIC])
-        else:
-            parts = consumer.partitions_for_topic(TOPIC) or set()
-            if not parts:
-                consumer.subscribe([TOPIC])
-                history_sent = True
-            else:
-                tps = [TopicPartition(TOPIC, p) for p in parts]
-                consumer.assign(tps)
+        CONNECTED_CLIENTS.labels(app="ws-api").inc() # Track active clients
+        client_registered = True
 
-                now_ms = int(time.time() * 1000)
-                history_cutoff_ms = now_ms
-                start_ts_ms = now_ms - lookback_min * 60 * 1000
+        bbox_param = ws.query_params.get("bbox")
+        lookback_param = ws.query_params.get("lookback_min")
 
-                offsets = await consumer.offsets_for_times({tp: start_ts_ms for tp in tps})
-                end_offsets = await consumer.end_offsets(tps)
+        bbox = parse_bbox(bbox_param) if bbox_param else None
+        lookback_min = parse_lookback_min(lookback_param)
 
-                history_check = {tp.partition: False for tp in tps}
+        if bbox is None:
+            await ws.send_text('{"error":"query param bbox must be lat1,lon1,lat2,lon2"}')
+            await ws.close(code=4400)
+            return
 
-                for tp in tps:
-                    offset_meta = offsets.get(tp)
-                    if offset_meta is not None and getattr(offset_meta, "offset", None) is not None:
-                        consumer.seek(tp, offset_meta.offset)
-                    else:
-                        consumer.seek(tp, end_offsets[tp])
-                        history_check[tp.partition] = True
+        if lookback_min is None:
+            await ws.send_text('{"error":"query param lookback_min must be an integer"}')
+            await ws.close(code=4401)
+            return
 
-        history_sent = lookback_min == 0 or history_check is None
+        consumer = AIOKafkaConsumer(
+            bootstrap_servers=BROKERS,
+            value_deserializer=lambda b: json.loads(b),
+            enable_auto_commit=False,
+            auto_offset_reset="latest",
+            group_id=None,
+        )
 
-        async for msg in consumer:
-            rec = msg.value
-            lat = rec.get("lat")
-            lon = rec.get("lon")
+        history_check: Optional[Dict[int, bool]] = None
+        history_cutoff_ms: Optional[int] = None
 
-            if lat is None or lon is None:
-                continue
+        await consumer.start()
 
-            if not inside_bbox(lat, lon, bbox):
-                continue
-
-            if history_check is not None and history_cutoff_ms is not None and not history_sent:
-                message_ts = msg.timestamp or 0
-                if message_ts > history_cutoff_ms:
-                    history_check[msg.partition] = True
-                    if all(history_check.values()):
-                        history_sent = True
-                        await ws.send_text('{"type":"history_complete"}')
-
-            try:
-                MESSAGES_SENT.labels(app="ws-api").inc()
-                await ws.send_text(json.dumps(rec).decode("utf-8"))
-            except Exception:
-                break
-    finally:
         try:
-            await consumer.stop()
-        except Exception:
-            pass
+            if lookback_min == 0:
+                consumer.subscribe([TOPIC])
+            else:
+                parts = consumer.partitions_for_topic(TOPIC) or set()
+                if not parts:
+                    consumer.subscribe([TOPIC])
+                    history_sent = True
+                else:
+                    tps = [TopicPartition(TOPIC, p) for p in parts]
+                    consumer.assign(tps)
+
+                    now_ms = int(time.time() * 1000)
+                    history_cutoff_ms = now_ms
+                    start_ts_ms = now_ms - lookback_min * 60 * 1000
+
+                    offsets = await consumer.offsets_for_times({tp: start_ts_ms for tp in tps})
+                    end_offsets = await consumer.end_offsets(tps)
+
+                    history_check = {tp.partition: False for tp in tps}
+
+                    for tp in tps:
+                        offset_meta = offsets.get(tp)
+                        if offset_meta is not None and getattr(offset_meta, "offset", None) is not None:
+                            consumer.seek(tp, offset_meta.offset)
+                        else:
+                            consumer.seek(tp, end_offsets[tp])
+                            history_check[tp.partition] = True
+
+            history_sent = lookback_min == 0 or history_check is None
+
+            async for msg in consumer:
+                rec = msg.value
+                lat = rec.get("lat")
+                lon = rec.get("lon")
+
+                if lat is None or lon is None:
+                    continue
+
+                if not inside_bbox(lat, lon, bbox):
+                    continue
+
+                if history_check is not None and history_cutoff_ms is not None and not history_sent:
+                    message_ts = msg.timestamp or 0
+                    if message_ts > history_cutoff_ms:
+                        history_check[msg.partition] = True
+                        if all(history_check.values()):
+                            history_sent = True
+                            await ws.send_text('{"type":"history_complete"}')
+
+                try:
+                    # measure end-to-end latency
+                    now_s = time.time()
+                    msg_ts_ms = msg.timestamp if msg.timestamp is not None else int(now_s * 1000)
+                    e2e_sec = max(0.0, now_s - (msg_ts_ms / 1000.0))
+                    E2E_LATENCY.labels(app="ws-api", topic=TOPIC).observe(e2e_sec)
+
+                    # Increment custom counter for each message delivered
+                    MESSAGES_SENT.labels(app="ws-api").inc()
+                    await ws.send_text(json.dumps(rec).decode("utf-8"))
+                except Exception:
+                    break
+        finally:
+            try:
+                await consumer.stop()
+            except Exception:
+                pass
+    finally:
+        if client_registered:
+            try:
+                CONNECTED_CLIENTS.labels(app="ws-api").dec()
+            except Exception:
+                pass
         try:
             await ws.close()
         except Exception:
             pass
-        

@@ -119,19 +119,19 @@ services:
       - "8000:8000"
     restart: unless-stopped
 
-  # web:
-  #   build: ./web
-  #   depends_on:
-  #     ws-api:
-  #       condition: service_started
-  #     redpanda-init:
-  #       condition: service_completed_successfully
-  #   environment:
-  #     NODE_ENV: production
-  #     WS_API_INTERNAL_HOST: ${WS_API_INTERNAL_HOST:-ws://ws-api:8000/ws}
-  #   ports:
-  #     - "3000:3000"
-  #   restart: unless-stopped
+  web:
+    build: ./web
+    depends_on:
+      ws-api:
+        condition: service_started
+      redpanda-init:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      WS_API_INTERNAL_HOST: ${WS_API_INTERNAL_HOST:-ws://ws-api:8000/ws}
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
 
   timescaledb:
     image: timescale/timescaledb-ha:pg16
@@ -194,6 +194,7 @@ services:
     container_name: prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-remote-write-receiver"
       - "--storage.tsdb.path=/prometheus"
       - "--web.enable-lifecycle"
     ports:
@@ -202,3 +203,36 @@ services:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./data/prometheus:/prometheus
     restart: unless-stopped
+
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    ports:
+      - "3100:3100"
+    volumes:
+     - ./observability/loki/loki.yml:/etc/loki/loki.yml:ro
+    command: ["-config.file=/etc/loki/loki.yml"]
+    restart: unless-stopped
+
+  alloy:
+   image: grafana/alloy:latest
+   privileged: true
+   ports:
+     - 12345:12345
+     - 4317:4317
+     - 4318:4318
+   environment:
+      ALLOY_DEPLOY_MODE: docker
+   volumes:
+      - ./observability/alloy/config.river:/etc/alloy/config.river:ro
+      - /proc:/rootproc:ro
+      - /var/run/docker.sock.raw:/var/run/docker.sock
+      - /sys:/sys:ro
+      - /:/rootfs:ro
+      - /dev/disk/:/dev/disk:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+   command: run --server.http.listen-addr=0.0.0.0:12345 --storage.path=/var/lib/alloy/data /etc/alloy/config.river
+   extra_hosts:
+        - "host.docker.internal:host-gateway"
+   devices:
+        - /dev/kmsg
